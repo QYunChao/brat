@@ -17,6 +17,7 @@ var Dispatcher = (function($, window, undefined) {
           table[message] = [];
         }
         table[message].push([host, handler]);
+        console.log('--->table:', table);
         return this;
       };
 
@@ -35,6 +36,10 @@ var Dispatcher = (function($, window, undefined) {
       };
 
       var post = function(asynch, message, args, returnType) {
+        const ignoredArr = ['mousemove', 'mouseover', 'mouseout', 'hideComment', '']
+        if (!ignoredArr.includes(asynch)) {
+          console.log('--->post:', asynch, message, args, returnType);
+        }
         if (typeof(asynch) !== 'number') {
           // no asynch parameter
           returnType = args;
