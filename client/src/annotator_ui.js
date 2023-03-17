@@ -703,13 +703,13 @@ var AnnotatorUI = (function($, window, undefined) {
           showAllAttributes = true;
         }
         if (span && !reselectedSpan) {
-          $('#span_form_reselect, #span_form_delete, #span_form_add_fragment').show();
+          $('#span_form_reselect, #span_form_delete, #span_form_batch_delete, #span_form_add_fragment').show();
           keymap[$.ui.keyCode.DELETE] = 'span_form_delete';
           keymap[$.ui.keyCode.INSERT] = 'span_form_reselect';
           keymap['S-' + $.ui.keyCode.ENTER] = 'span_form_add_fragment';
           $('#span_notes').val(span.annotatorNotes || '');
         } else {
-          $('#span_form_reselect, #span_form_delete, #span_form_add_fragment').hide();
+          $('#span_form_reselect, #span_form_delete, #span_form_batch_delete, #span_form_add_fragment').hide();
           keymap[$.ui.keyCode.DELETE] = null;
           keymap[$.ui.keyCode.INSERT] = null;
           keymap['S-' + $.ui.keyCode.ENTER] = null;
@@ -1442,9 +1442,9 @@ var AnnotatorUI = (function($, window, undefined) {
       };
 
       var deleteArc = function(evt) {
-        if (Configuration.confirmModeOn && !confirm("Are you sure you want to delete this annotation?")) {
-          return;
-        }
+        // if (Configuration.confirmModeOn && !confirm("Are you sure you want to delete this annotation?")) {
+        //   return;
+        // }
         var eventDataId = $(evt.target).attr('data-arc-ed');
         dispatcher.post('hideForm');
         arcOptions.action = 'deleteArc';
@@ -2228,9 +2228,9 @@ var AnnotatorUI = (function($, window, undefined) {
       var rapidSpanForm = $('#rapid_span_form');
     
       var deleteSpan = function() {
-        if (Configuration.confirmModeOn && !confirm("Are you sure you want to delete this annotation?")) {
-          return;
-        }
+        // if (Configuration.confirmModeOn && !confirm("Are you sure you want to delete this annotation?")) {
+        //   return;
+        // }
         $.extend(spanOptions, {
           action: 'deleteSpan',
           collection: coll,
@@ -2328,6 +2328,126 @@ var AnnotatorUI = (function($, window, undefined) {
         $('#waiter').dialog('open');
       };
 
+      // 判断和之前标注过的内容是否有交叉
+      function notOverlapping(towerList, offset) {
+        for (let i = 1; i < towerList.length; i++) {
+          if (offset[0] >= towerList[i - 1][1] && 
+              offset[1] <= towerList[i][0]) {
+            return true; // 无交叉
+          }
+        }
+        return false; // 有交叉
+      }
+
+      function sleep (time) {
+        return new Promise((resolve) => setTimeout(resolve, time));
+      }
+
+      // 添加标注
+      function addAnn(type, offsets) {
+        $('#waiter').dialog('open');
+        $.extend(spanOptions, {
+          action: 'createSpan',
+          collection: coll,
+          'document': doc,
+          type: type,
+          comment: $('#span_notes').val()
+        });
+
+        spanOptions.attributes = $.toJSON(spanAttributes());
+
+        spanOptions.normalizations = $.toJSON(spanNormalizations());
+
+        if (spanOptions.offsets) {
+          spanOptions.offsets = $.toJSON(offsets);
+        }
+
+        // unfocus all elements to prevent focus being kept after
+        // hiding them
+        spanForm.parent().find('*').blur();
+        dispatcher.post('ajax', [spanOptions, 'edited']);
+      }
+
+      var batchAdd = async function() {
+        let spanText = $('#span_selected').text();
+        let type = $('#span_form input:radio:checked').val();
+        $('#span_form_batch_add').blur();
+        dispatcher.post('hideForm');
+
+        // 所有标注过的内容范围
+        var towerArr = [[-Infinity, -Infinity]];
+        Object.keys(data.towers).map((v) => {
+          const tower = data.towers[v];
+          towerArr.push([tower[0].from, tower[0].to]);
+        })
+        towerArr.push([Infinity, Infinity]);
+
+        // 按行遍历整个文档，批量标注文本
+        let textLen = spanText.length;
+        for (let chunk of data.chunks) {
+          let index = -1;
+          let position = 0;
+          let text = chunk.text;
+          // 每行可能存在多个重复文本
+          while ((index = text.indexOf(spanText, position)) > -1) {
+            let start = chunk.from + index;
+            let offset = [start, start + textLen];
+            if (notOverlapping(towerArr, offset)) {
+              addAnn(type, [offset]);
+              while(!dispatcher.post('isReloadOkay')[0]) {
+                await sleep(50);
+              }
+            }
+            position = index + textLen;
+          }
+        }
+        
+        return false;
+      };
+
+      // 删除标注
+      function deleteAnn(id, type, offsets) {
+        $('#waiter').dialog('open');
+        $.extend(spanOptions, {
+          action: 'deleteSpan',
+          collection: coll,
+          'document': doc,
+          type, 
+          id,
+        });
+        spanOptions.offsets = JSON.stringify(offsets);
+        dispatcher.post('ajax', [spanOptions, 'edited']);
+      }
+
+      var batchDelete = async function() {
+        let spanText = $('#span_selected').text();
+        var spanType = $('#span_form input:radio:checked').val();
+        dispatcher.post('hideForm');
+
+        // 所有标签之间的关系
+        let arcSet = new Set();
+        data.arcs.map(({ origin, target }) => {
+          arcSet.add(origin);
+          arcSet.add(target);
+        });
+
+        for (let key = 0; key < Object.keys(data.towers).length; key++) {
+          const { id, offsets, text, type } = data.towers[key][0].span;
+          // 文本和类型都一致时，且和其他标签无关系时，才删除
+          if (text === spanText && type === spanType && !arcSet.has(id)) {
+            deleteAnn(id, type, offsets);
+            // 每次删除之后，data.towers 的数据都会删掉一条
+            // 并且顺序可能发生改变，所以重新从 0 开始检查
+            while(!dispatcher.post('isReloadOkay')[0]) {
+              await sleep(50);
+            }
+            key = -1;
+          }
+        }
+        
+        return false;
+      };
+
       dispatcher.post('initForm', [spanForm, {
           alsoResize: '#entity_and_event_wrapper',
           width: 760,
@@ -2339,6 +2459,10 @@ var AnnotatorUI = (function($, window, undefined) {
               id: 'span_form_delete',
               text: "Delete",
               click: deleteSpan
+            }, {
+              id: 'span_form_batch_delete',
+              text: "Batch Delete",
+              click: batchDelete
             }, {
               id: 'span_form_delete_fragment',
               text: "Delete Frag.",
@@ -2355,6 +2479,10 @@ var AnnotatorUI = (function($, window, undefined) {
               id: 'span_form_split',
               text: 'Split',
               click: splitSpan
+            }, {
+              id: 'span_form_batch_add',
+              text: "Batch Add",
+              click: batchAdd
             }
           ],
           close: function(evt) {
